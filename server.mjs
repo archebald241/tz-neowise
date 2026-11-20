@@ -3,18 +3,69 @@ import { readFile } from "node:fs/promises";
 import { classify } from "./mock-ai.mjs";
 
 const html = await readFile(new URL("./index.html", import.meta.url));
+const ALLOWED_TOPICS = new Set(["delivery", "pricing", "other"]);
+const MODEL_TIMEOUT_MS = 300;
 
 function json(response, status, body) {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
 }
 
-async function handleTriage(request, response) {
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function parseModelResult(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  if (!ALLOWED_TOPICS.has(parsed.topic)) return null;
+  if (!isNonEmptyString(parsed.draft)) return null;
+  return { topic: parsed.topic, draft: parsed.draft.trim() };
+}
+
+async function classifyWithTimeout(text) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
+  try {
+    return await classify(text, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readJsonBody(request) {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
-  const { text } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  const result = JSON.parse(await classify(text));
-  return json(response, 200, { status: "ready", ...result });
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+async function handleTriage(request, response) {
+  let body;
+  try {
+    body = await readJsonBody(request);
+  } catch {
+    return json(response, 400, { status: "invalid_input" });
+  }
+
+  if (!body || typeof body !== "object" || !isNonEmptyString(body.text)) {
+    return json(response, 400, { status: "invalid_input" });
+  }
+
+  try {
+    const raw = await classifyWithTimeout(body.text);
+    const result = parseModelResult(raw);
+    if (!result) {
+      return json(response, 200, { status: "manual_review", topic: null, draft: null });
+    }
+    return json(response, 200, { status: "ready", topic: result.topic, draft: result.draft });
+  } catch {
+    return json(response, 200, { status: "manual_review", topic: null, draft: null });
+  }
 }
 
 createServer(async (request, response) => {

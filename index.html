@@ -8,7 +8,11 @@
     body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui, sans-serif; }
     textarea { box-sizing: border-box; display: block; width: 100%; margin: .5rem 0; padding: .5rem; font: inherit; }
     button { padding: .4rem .8rem; font: inherit; }
-    pre { white-space: pre-wrap; }
+    #output { margin-top: 1.5rem; }
+    #output[hidden] { display: none; }
+    #topic { margin: 0 0 .5rem; font-weight: 600; }
+    #draft { margin: 0; white-space: pre-wrap; }
+    #message-box { margin: 0; color: #444; }
   </style>
 </head>
 <body>
@@ -18,18 +22,78 @@
     <textarea id="message" rows="4"></textarea>
     <button type="submit">Разобрать заявку</button>
   </form>
-  <pre id="result" aria-live="polite"></pre>
+  <section id="output" hidden aria-live="polite">
+    <p id="topic"></p>
+    <p id="draft"></p>
+    <p id="message-box"></p>
+  </section>
   <script type="module">
+    const TOPIC_LABELS = {
+      delivery: "Доставка",
+      pricing: "Цены",
+      other: "Другое",
+    };
+
     const form = document.querySelector("form");
-    const result = document.querySelector("#result");
+    const output = document.querySelector("#output");
+    const topicEl = document.querySelector("#topic");
+    const draftEl = document.querySelector("#draft");
+    const messageEl = document.querySelector("#message-box");
+
+    function clearResult() {
+      topicEl.textContent = "";
+      draftEl.textContent = "";
+      messageEl.textContent = "";
+    }
+
+    function showReady(topic, draft) {
+      clearResult();
+      topicEl.textContent = `Тема: ${TOPIC_LABELS[topic] || topic}`;
+      draftEl.textContent = draft;
+      output.hidden = false;
+    }
+
+    function showManualReview() {
+      clearResult();
+      messageEl.textContent =
+        "Не удалось автоматически разобрать заявку. Разберите её вручную и ответьте клиенту сами.";
+      output.hidden = false;
+    }
+
+    function showError(text) {
+      clearResult();
+      messageEl.textContent = text;
+      output.hidden = false;
+    }
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      clearResult();
+      output.hidden = true;
+
       const reply = await fetch("/api/triage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: document.querySelector("#message").value }),
       });
-      result.textContent = JSON.stringify(await reply.json(), null, 2);
+      const data = await reply.json();
+
+      if (reply.status === 400 || data.status === "invalid_input") {
+        showError("Введите непустой текст заявки.");
+        return;
+      }
+
+      if (data.status === "ready") {
+        showReady(data.topic, data.draft);
+        return;
+      }
+
+      if (data.status === "manual_review") {
+        showManualReview();
+        return;
+      }
+
+      showError("Сервер временно недоступен. Попробуйте ещё раз.");
     });
   </script>
 </body>
